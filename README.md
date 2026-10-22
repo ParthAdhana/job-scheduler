@@ -31,6 +31,8 @@ docker compose up -d          # Postgres, Redis, Kafka, Kafka UI
 
 Flyway creates the schema on startup (`src/main/resources/db/migration`).
 
+Postgres is exposed on host port **5433** (not 5432) so it does not clash with a locally installed Postgres. Connect with `psql -h localhost -p 5433 -U scheduler scheduler` (password `scheduler`).
+
 ## Run tests
 
 ```bash
