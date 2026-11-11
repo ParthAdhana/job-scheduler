@@ -1,0 +1,6 @@
+# Run with SPRING_PROFILES_ACTIVE=json for one JSON object per log line (Elastic Common Schema),
+# ready for Loki, Elasticsearch or CloudWatch. MDC fields such as jobId become JSON fields.
+logging:
+  structured:
+    format:
+      console: ecs

@@ -71,7 +71,7 @@ public class JobStore {
                         SET status = 'RUNNING', attempts = attempts + 1, locked_by = :workerId,
                             lease_expires_at = :leaseUntil, updated_at = :now, version = version + 1
                         WHERE id = :id AND status = 'QUEUED' AND attempts = :previousAttempts
-                        RETURNING id, tenant_id, type, payload::text AS payload, attempts, max_attempts, cron
+                        RETURNING id, tenant_id, type, payload::text AS payload, attempts, max_attempts, cron, run_at
                         """)
                 .param("id", jobId)
                 .param("previousAttempts", attempt - 1)
@@ -230,6 +230,20 @@ public class JobStore {
         return nextId;
     }
 
+    /** Job counts by status, for the dashboard. */
+    public Map<String, Long> countByStatus() {
+        Map<String, Long> counts = new java.util.HashMap<>();
+        jdbc.sql("SELECT status, count(*) AS n FROM jobs GROUP BY status")
+                .query(rs -> {
+                    counts.put(rs.getString("status"), rs.getLong("n"));
+                });
+        return counts;
+    }
+
+    public long outboxBacklog() {
+        return jdbc.sql("SELECT count(*) FROM outbox WHERE published_at IS NULL").query(Long.class).single();
+    }
+
     public List<JobAttempt> attempts(UUID jobId) {
         return jdbc.sql("""
                         SELECT attempt_number, worker_id, outcome, error, started_at, finished_at
@@ -271,7 +285,8 @@ public class JobStore {
         try {
             return new ClaimedJob(rs.getObject("id", UUID.class), rs.getString("tenant_id"),
                     rs.getString("type"), objectMapper.readValue(rs.getString("payload"), MAP),
-                    rs.getInt("attempts"), rs.getInt("max_attempts"), rs.getString("cron"));
+                    rs.getInt("attempts"), rs.getInt("max_attempts"), rs.getString("cron"),
+                    rs.getTimestamp("run_at").toInstant());
         } catch (Exception e) {
             throw new SQLException("Could not read payload of job " + rs.getString("id"), e);
         }

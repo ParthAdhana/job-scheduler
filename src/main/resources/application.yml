@@ -41,7 +41,16 @@ management:
   endpoints:
     web:
       exposure:
-        include: health,info
+        include: health,info,prometheus,metrics
+  metrics:
+    tags:
+      application: ${spring.application.name}
+      instance: ${scheduler.instance-id}
+
+logging:
+  pattern:
+    # Adds the job being worked on, when there is one, to every log line.
+    level: "%5p [%X{jobId:-}]"
 
 springdoc:
   swagger-ui:

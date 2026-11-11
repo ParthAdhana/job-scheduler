@@ -1,0 +1,11 @@
+global:
+  scrape_interval: 5s
+
+scrape_configs:
+  # The app runs on the host (./mvnw spring-boot:run) or as the "app" compose service.
+  - job_name: job-scheduler
+    metrics_path: /actuator/prometheus
+    static_configs:
+      - targets:
+          - host.docker.internal:8080
+          - app:8080

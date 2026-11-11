@@ -10,6 +10,7 @@ import org.springframework.stereotype.Component;
 import org.springframework.transaction.annotation.Transactional;
 
 import com.jobscheduler.SchedulerProperties;
+import com.jobscheduler.observability.JobMetrics;
 
 import java.sql.Timestamp;
 import java.time.Clock;
@@ -35,13 +36,15 @@ public class OutboxRelay {
     private final KafkaTemplate<String, String> kafka;
     private final SchedulerProperties properties;
     private final Clock clock;
+    private final JobMetrics metrics;
 
     public OutboxRelay(JdbcClient jdbc, KafkaTemplate<String, String> kafka,
-                       SchedulerProperties properties, Clock clock) {
+                       SchedulerProperties properties, Clock clock, JobMetrics metrics) {
         this.jdbc = jdbc;
         this.kafka = kafka;
         this.properties = properties;
         this.clock = clock;
+        this.metrics = metrics;
     }
 
     @Scheduled(fixedDelayString = "${scheduler.outbox.poll-interval-ms:200}")
@@ -76,6 +79,7 @@ public class OutboxRelay {
                 .param("now", Timestamp.from(clock.instant()))
                 .param("ids", rows.stream().map(OutboxRow::id).toList())
                 .update();
+        metrics.outboxPublished(rows.size());
         log.debug("Published {} outbox messages", rows.size());
     }
 
