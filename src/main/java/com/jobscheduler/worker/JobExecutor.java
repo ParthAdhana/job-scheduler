@@ -69,6 +69,10 @@ public class JobExecutor {
 
     private Optional<ClaimedJob> claim(JobMessage message) {
         Instant now = clock.instant();
+        if (!store.markMessageProcessed(message.messageId(), now)) {
+            log.info("Ignoring redelivered message {} for job {}", message.messageId(), message.jobId());
+            return Optional.empty();
+        }
         Optional<ClaimedJob> job = store.claim(message.jobId(), message.attempt(), workerId,
                 now, now.plus(leaseDuration));
         job.ifPresent(j -> store.recordAttemptStarted(j, workerId, now));

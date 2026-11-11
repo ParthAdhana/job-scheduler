@@ -15,6 +15,11 @@ spring:
         jdbc.time_zone: UTC
   flyway:
     enabled: true
+  data:
+    redis:
+      host: ${REDIS_HOST:localhost}
+      port: ${REDIS_PORT:6379}
+      timeout: 500ms
   kafka:
     bootstrap-servers: ${KAFKA_BOOTSTRAP_SERVERS:localhost:9092}
     producer:
@@ -54,6 +59,9 @@ scheduler:
     enabled: true
     concurrency: 3
     lease-duration: 30s
+  idempotency:
+    # How long a key is remembered in Redis. Postgres keeps it for the life of the job.
+    ttl: 24h
   retry:
     base-delay: 1s
     max-delay: 5m

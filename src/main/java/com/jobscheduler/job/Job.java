@@ -68,6 +68,12 @@ public class Job {
     @Column(name = "parent_job_id")
     private UUID parentJobId;
 
+    @Column(name = "idempotency_key")
+    private String idempotencyKey;
+
+    @Column(name = "request_hash")
+    private String requestHash;
+
     /** Workers update jobs with plain SQL that also bumps this, so JPA notices concurrent changes. */
     @Version
     private Long version;
@@ -95,6 +101,11 @@ public class Job {
         job.createdAt = now;
         job.updatedAt = now;
         return job;
+    }
+
+    public void assignIdempotencyKey(String key, String hash) {
+        this.idempotencyKey = key;
+        this.requestHash = hash;
     }
 
     /** Due now: hand it to the queue. Only valid for a job that has not been queued yet. */
@@ -148,5 +159,7 @@ public class Job {
     public Instant getLeaseExpiresAt() { return leaseExpiresAt; }
     public Long getVersion() { return version; }
     public String getCron() { return cron; }
+    public String getIdempotencyKey() { return idempotencyKey; }
+    public String getRequestHash() { return requestHash; }
     public UUID getParentJobId() { return parentJobId; }
 }

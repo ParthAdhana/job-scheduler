@@ -37,6 +37,31 @@ public class JobStore {
     }
 
     /**
+     * Records that a Kafka message was handled. Returns false if it already was, i.e. this is a
+     * redelivery. Part of the caller's transaction, so a rollback forgets it too.
+     */
+    public boolean markMessageProcessed(UUID messageId, Instant now) {
+        return jdbc.sql("""
+                        INSERT INTO processed_messages (message_id, processed_at) VALUES (:messageId, :now)
+                        ON CONFLICT (message_id) DO NOTHING
+                        """)
+                .param("messageId", messageId)
+                .param("now", ts(now))
+                .update() == 1;
+    }
+
+    /** Housekeeping: dedupe records only need to outlive Kafka's redelivery window. */
+    public int deleteProcessedMessagesBefore(Instant cutoff) {
+        return jdbc.sql("DELETE FROM processed_messages WHERE processed_at < :cutoff")
+                .param("cutoff", ts(cutoff)).update();
+    }
+
+    public int deletePublishedOutboxBefore(Instant cutoff) {
+        return jdbc.sql("DELETE FROM outbox WHERE published_at < :cutoff")
+                .param("cutoff", ts(cutoff)).update();
+    }
+
+    /**
      * QUEUED -> RUNNING. Succeeds only if the job is still queued and has made exactly
      * {@code attempt - 1} attempts, so late or duplicate messages cannot start it again.
      */

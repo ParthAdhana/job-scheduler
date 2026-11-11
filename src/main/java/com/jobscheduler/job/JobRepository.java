@@ -11,6 +11,8 @@ public interface JobRepository extends JpaRepository<Job, UUID> {
 
     Optional<Job> findByIdAndTenantId(UUID id, String tenantId);
 
+    Optional<Job> findByTenantIdAndIdempotencyKey(String tenantId, String idempotencyKey);
+
     Page<Job> findByTenantId(String tenantId, Pageable pageable);
 
     Page<Job> findByTenantIdAndStatus(String tenantId, JobStatus status, Pageable pageable);
