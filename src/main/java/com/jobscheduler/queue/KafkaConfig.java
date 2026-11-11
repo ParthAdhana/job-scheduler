@@ -17,8 +17,18 @@ public class KafkaConfig {
 
     /** Partitions cap how many workers can consume in parallel within one consumer group. */
     @Bean
-    NewTopic readyTopic() {
-        return TopicBuilder.name(Topics.READY).partitions(6).replicas(1).build();
+    NewTopic readyHighTopic() {
+        return TopicBuilder.name(Topics.READY_HIGH).partitions(6).replicas(1).build();
+    }
+
+    @Bean
+    NewTopic readyNormalTopic() {
+        return TopicBuilder.name(Topics.READY_NORMAL).partitions(6).replicas(1).build();
+    }
+
+    @Bean
+    NewTopic readyLowTopic() {
+        return TopicBuilder.name(Topics.READY_LOW).partitions(3).replicas(1).build();
     }
 
     @Bean

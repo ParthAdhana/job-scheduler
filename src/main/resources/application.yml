@@ -57,8 +57,24 @@ scheduler:
     batch-size: 100
   worker:
     enabled: true
-    concurrency: 3
+    # Consumer threads per priority topic, per instance.
+    concurrency:
+      high: 4
+      normal: 3
+      low: 1
     lease-duration: 30s
+  rate-limit:
+    enabled: true
+    defaults:
+      capacity: 50          # burst size
+      refill-per-second: 10 # sustained rate
+    tenants:
+      bulk-importer:
+        capacity: 500
+        refill-per-second: 100
+  # Max concurrently running jobs per type, across all workers.
+  concurrency-limits:
+    send-email: 5
   idempotency:
     # How long a key is remembered in Redis. Postgres keeps it for the life of the job.
     ttl: 24h

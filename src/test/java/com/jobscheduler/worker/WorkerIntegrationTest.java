@@ -52,7 +52,7 @@ class WorkerIntegrationTest extends IntegrationTest {
 
         // Redeliver the same logical message, as Kafka may after a consumer rebalance.
         var duplicate = new JobMessage(UUID.randomUUID(), id, "any", "counting", 1);
-        kafka.send(Topics.READY, id.toString(), objectMapper.writeValueAsString(duplicate)).get();
+        kafka.send(Topics.READY_NORMAL, id.toString(), objectMapper.writeValueAsString(duplicate)).get();
 
         // Give the worker time to (not) act on it.
         await().during(Duration.ofSeconds(2)).atMost(Duration.ofSeconds(5))

@@ -61,7 +61,7 @@ class RetryIntegrationTest extends IntegrationTest {
     @Test
     void unparseableMessageGoesToDeadLetterTopic() throws Exception {
         String marker = "not-json-" + UUID.randomUUID();
-        kafka().send(com.jobscheduler.queue.Topics.READY, marker, "{this is not json " + marker).get();
+        kafka().send(com.jobscheduler.queue.Topics.READY_NORMAL, marker, "{this is not json " + marker).get();
 
         assertThat(deadLetters.contains(r -> marker.equals(r.key()), Duration.ofSeconds(15))).isTrue();
     }

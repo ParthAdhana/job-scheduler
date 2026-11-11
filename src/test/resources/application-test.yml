@@ -4,7 +4,10 @@ scheduler:
   outbox:
     poll-interval-ms: 50
   worker:
-    concurrency: 2
+    concurrency:
+      high: 2
+      normal: 2
+      low: 1
     lease-duration: 10s
   retry:
     base-delay: 100ms
@@ -12,3 +15,13 @@ scheduler:
   poller:
     interval-ms: 100
     reaper-interval-ms: 300
+  rate-limit:
+    defaults:
+      capacity: 100000
+      refill-per-second: 100000
+    tenants:
+      limited-tenant:
+        capacity: 3
+        refill-per-second: 0.1
+  concurrency-limits:
+    sleep: 1

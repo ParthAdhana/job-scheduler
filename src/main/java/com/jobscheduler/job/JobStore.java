@@ -133,6 +133,22 @@ public class JobStore {
                 .update() == 1;
     }
 
+    /**
+     * QUEUED -> PENDING without using up an attempt: the job's type is at its concurrency limit, so
+     * try again shortly. The poller will queue it again once {@code retryAt} passes.
+     */
+    public boolean deferQueued(UUID jobId, int attempt, Instant retryAt, Instant now) {
+        return jdbc.sql("""
+                        UPDATE jobs SET status = 'PENDING', run_at = :retryAt, updated_at = :now, version = version + 1
+                        WHERE id = :id AND status = 'QUEUED' AND attempts = :previousAttempts
+                        """)
+                .param("id", jobId)
+                .param("previousAttempts", attempt - 1)
+                .param("retryAt", ts(retryAt))
+                .param("now", ts(now))
+                .update() == 1;
+    }
+
     /** Pushes the lease forward while a long handler is still working. */
     public boolean extendLease(ClaimedJob job, String workerId, Instant leaseUntil) {
         return jdbc.sql("""
@@ -156,15 +172,16 @@ public class JobStore {
                         WHERE id IN (
                             SELECT id FROM jobs
                             WHERE status IN ('PENDING', 'RETRYING') AND run_at <= :now
-                            ORDER BY run_at
+                            ORDER BY CASE priority WHEN 'HIGH' THEN 0 WHEN 'NORMAL' THEN 1 ELSE 2 END, run_at
                             LIMIT :limit
                             FOR UPDATE SKIP LOCKED)
-                        RETURNING id, tenant_id, type, attempts
+                        RETURNING id, tenant_id, type, priority, attempts
                         """)
                 .param("now", ts(now))
                 .param("limit", limit)
                 .query((rs, n) -> new DueJob(rs.getObject("id", UUID.class), rs.getString("tenant_id"),
-                        rs.getString("type"), rs.getInt("attempts")))
+                        rs.getString("type"), JobPriority.valueOf(rs.getString("priority")),
+                        rs.getInt("attempts")))
                 .list();
     }
 
@@ -200,9 +217,9 @@ public class JobStore {
         UUID nextId = UUID.randomUUID();
         jdbc.sql("""
                         INSERT INTO jobs (id, tenant_id, type, payload, status, run_at, attempts, max_attempts,
-                                          cron, parent_job_id, created_at, updated_at)
+                                          cron, parent_job_id, priority, created_at, updated_at)
                         SELECT :nextId, tenant_id, type, payload, 'PENDING', :runAt, 0, max_attempts,
-                               cron, id, :now, :now
+                               cron, id, priority, :now, :now
                         FROM jobs WHERE id = :id
                         """)
                 .param("nextId", nextId)
