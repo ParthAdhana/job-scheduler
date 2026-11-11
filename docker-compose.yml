@@ -61,6 +61,33 @@ services:
       kafka:
         condition: service_healthy
 
+  # The scheduler itself, for running everything in Docker:
+  #   docker compose --profile app up -d --build
+  #   docker compose --profile app up -d --scale worker=3   # more workers
+  app:
+    profiles: [app]
+    build: .
+    ports:
+      - "8080:8080"
+    environment: &app-env
+      DB_URL: jdbc:postgresql://postgres:5432/scheduler
+      KAFKA_BOOTSTRAP_SERVERS: kafka:29092
+      REDIS_HOST: redis
+    depends_on: &app-deps
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      kafka:
+        condition: service_healthy
+
+  # Same image, no published port: extra capacity for workers, the poller and the outbox relay.
+  worker:
+    profiles: [app]
+    build: .
+    environment: *app-env
+    depends_on: *app-deps
+
   prometheus:
     image: prom/prometheus:v3.5.0
     ports:
