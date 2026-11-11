@@ -1,11 +1,11 @@
--- Day 2: transactional outbox, worker leases and optimistic locking.
+-- Transactional outbox, worker leases and optimistic locking.
 
 -- Every UPDATE bumps version, so a stale read (e.g. a cancel racing a worker claim) fails
 -- instead of silently overwriting the newer state.
 ALTER TABLE jobs ADD COLUMN version BIGINT NOT NULL DEFAULT 0;
 
 -- Which worker holds the job and until when. A worker that dies stops renewing the lease,
--- and the reaper (day 3) hands the job to someone else once it expires.
+-- and the reaper hands the job to someone else once it expires.
 ALTER TABLE jobs ADD COLUMN locked_by VARCHAR(100);
 ALTER TABLE jobs ADD COLUMN lease_expires_at TIMESTAMPTZ;
 
