@@ -8,6 +8,8 @@ import com.jobscheduler.queue.JobMessage;
 import com.jobscheduler.scheduling.Recurrence;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.slf4j.MDC;
+import com.jobscheduler.observability.JobMetrics;
 import org.springframework.stereotype.Component;
 import org.springframework.transaction.support.TransactionTemplate;
 
@@ -39,6 +41,7 @@ public class JobExecutor {
     private final Recurrence recurrence;
     private final RetryPolicy retryPolicy;
     private final ConcurrencyLimiter concurrency;
+    private final JobMetrics metrics;
     private final TransactionTemplate tx;
     private final Clock clock;
     private final Duration leaseDuration;
@@ -48,7 +51,7 @@ public class JobExecutor {
 
     public JobExecutor(JobStore store, JobHandlerRegistry handlers, JobDispatcher dispatcher,
                        Recurrence recurrence, RetryPolicy retryPolicy, ConcurrencyLimiter concurrency,
-                       TransactionTemplate tx,
+                       JobMetrics metrics, TransactionTemplate tx,
                        SchedulerProperties properties, Clock clock) {
         this.store = store;
         this.handlers = handlers;
@@ -56,6 +59,7 @@ public class JobExecutor {
         this.recurrence = recurrence;
         this.retryPolicy = retryPolicy;
         this.concurrency = concurrency;
+        this.metrics = metrics;
         this.tx = tx;
         this.clock = clock;
         this.leaseDuration = properties.worker().leaseDuration();
@@ -89,6 +93,7 @@ public class JobExecutor {
             }
             Instant retryAt = now.plusMillis(500 + ThreadLocalRandom.current().nextLong(500));
             if (store.deferQueued(message.jobId(), message.attempt(), retryAt, now)) {
+                metrics.deferred(message.type());
                 log.debug("Job {} ({}) deferred: concurrency limit reached", message.jobId(), message.type());
             }
         });
@@ -109,19 +114,31 @@ public class JobExecutor {
     private void run(ClaimedJob job) {
         var context = new JobContext(job.id(), job.tenantId(), job.type(), job.payload(),
                 job.attempt(), job.maxAttempts());
+        // Every log line written while this job runs, handler logs included, carries these.
+        MDC.put("jobId", job.id().toString());
+        MDC.put("tenantId", job.tenantId());
+        MDC.put("jobType", job.type());
+        Instant started = clock.instant();
+        metrics.queueWait(job.type(), Duration.between(job.runAt(), started));
         ScheduledFuture<?> heartbeat = startHeartbeat(job);
         try {
             JobHandler handler = handlers.find(job.type())
                     .orElseThrow(() -> new IllegalStateException("No handler for job type " + job.type()));
             handler.execute(context);
             heartbeat.cancel(false);
+            metrics.executed(job.type(), true, Duration.between(started, clock.instant()));
             onSuccess(job);
         } catch (Exception e) {
             heartbeat.cancel(false);
             if (e instanceof InterruptedException) {
                 Thread.currentThread().interrupt();
             }
+            metrics.executed(job.type(), false, Duration.between(started, clock.instant()));
             onFailure(job, e);
+        } finally {
+            MDC.remove("jobId");
+            MDC.remove("tenantId");
+            MDC.remove("jobType");
         }
     }
 
@@ -160,12 +177,14 @@ public class JobExecutor {
                 Instant retryAt = now.plus(retryPolicy.delayAfter(job.attempt()));
                 if (store.markRetrying(job, workerId, message, retryAt, now)) {
                     store.recordAttemptFinished(job.id(), job.attempt(), false, message, now);
+                    metrics.retryScheduled(job.type());
                     log.warn("Job {} ({}) failed attempt {}/{}, retrying at {}: {}", job.id(), job.type(),
                             job.attempt(), job.maxAttempts(), retryAt, message);
                 }
             } else if (store.markFailed(job, workerId, message, now)) {
                 store.recordAttemptFinished(job.id(), job.attempt(), false, message, now);
                 dispatcher.deadLetter(job.id(), job.tenantId(), job.type(), job.attempt(), message, now);
+                metrics.deadLettered(job.type());
                 recurrence.scheduleNext(job.id(), job.cron(), now);
                 log.error("Job {} ({}) failed permanently after {} attempts: {}", job.id(), job.type(),
                         job.attempt(), message);

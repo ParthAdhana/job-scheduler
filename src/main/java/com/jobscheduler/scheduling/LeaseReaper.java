@@ -4,6 +4,7 @@ import com.jobscheduler.SchedulerProperties;
 import com.jobscheduler.job.ExpiredLease;
 import com.jobscheduler.job.JobStatus;
 import com.jobscheduler.job.JobStore;
+import com.jobscheduler.observability.JobMetrics;
 import com.jobscheduler.queue.JobDispatcher;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -31,14 +32,16 @@ public class LeaseReaper {
     private final JobStore store;
     private final JobDispatcher dispatcher;
     private final Recurrence recurrence;
+    private final JobMetrics metrics;
     private final SchedulerProperties properties;
     private final Clock clock;
 
-    public LeaseReaper(JobStore store, JobDispatcher dispatcher, Recurrence recurrence,
+    public LeaseReaper(JobStore store, JobDispatcher dispatcher, Recurrence recurrence, JobMetrics metrics,
                        SchedulerProperties properties, Clock clock) {
         this.store = store;
         this.dispatcher = dispatcher;
         this.recurrence = recurrence;
+        this.metrics = metrics;
         this.properties = properties;
         this.clock = clock;
     }
@@ -50,8 +53,10 @@ public class LeaseReaper {
         for (ExpiredLease job : store.reapExpiredLeases(now, properties.poller().batchSize())) {
             String error = "Lease expired: worker stopped responding";
             store.recordAttemptFinished(job.id(), job.attempts(), false, error, now);
+            metrics.leaseReclaimed(job.type());
             if (job.newStatus() == JobStatus.FAILED) {
                 dispatcher.deadLetter(job.id(), job.tenantId(), job.type(), job.attempts(), error, now);
+                metrics.deadLettered(job.type());
                 recurrence.scheduleNext(job.id(), job.cron(), now);
             }
             log.warn("Reclaimed job {} from an expired lease; now {}", job.id(), job.newStatus());

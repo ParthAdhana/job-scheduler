@@ -3,6 +3,7 @@ package com.jobscheduler.idempotency;
 import com.jobscheduler.job.Job;
 import com.jobscheduler.job.JobService;
 import com.jobscheduler.job.NewJob;
+import com.jobscheduler.observability.JobMetrics;
 import org.springframework.dao.DataIntegrityViolationException;
 import org.springframework.stereotype.Service;
 
@@ -27,11 +28,14 @@ public class JobSubmissionService {
     private final JobService jobService;
     private final IdempotencyCache cache;
     private final RequestHasher hasher;
+    private final JobMetrics metrics;
 
-    public JobSubmissionService(JobService jobService, IdempotencyCache cache, RequestHasher hasher) {
+    public JobSubmissionService(JobService jobService, IdempotencyCache cache, RequestHasher hasher,
+                                JobMetrics metrics) {
         this.jobService = jobService;
         this.cache = cache;
         this.hasher = hasher;
+        this.metrics = metrics;
     }
 
     public record Submission(Job job, boolean replayed) {
@@ -39,7 +43,7 @@ public class JobSubmissionService {
 
     public Submission submit(String tenantId, NewJob request, String idempotencyKey) {
         if (idempotencyKey == null) {
-            return new Submission(jobService.create(tenantId, request), false);
+            return created(jobService.create(tenantId, request));
         }
         String hash = hasher.hash(request);
 
@@ -57,11 +61,16 @@ public class JobSubmissionService {
         try {
             Job created = jobService.create(tenantId, request, idempotencyKey, hash);
             cache.put(tenantId, idempotencyKey, created.getId(), hash);
-            return new Submission(created, false);
+            return created(created);
         } catch (DataIntegrityViolationException raceLost) {
             Job winner = jobService.findByIdempotencyKey(tenantId, idempotencyKey).orElseThrow(() -> raceLost);
             return replay(tenantId, idempotencyKey, hash, winner);
         }
+    }
+
+    private Submission created(Job job) {
+        metrics.submitted(job.getType(), job.getPriority());
+        return new Submission(job, false);
     }
 
     private Submission replay(String tenantId, String key, String hash, Job job) {

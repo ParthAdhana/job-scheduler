@@ -2,6 +2,7 @@ package com.jobscheduler.ratelimit;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.jobscheduler.SchedulerProperties;
+import com.jobscheduler.observability.JobMetrics;
 import jakarta.servlet.http.HttpServletRequest;
 import jakarta.servlet.http.HttpServletResponse;
 import org.springframework.http.HttpStatus;
@@ -20,12 +21,14 @@ public class RateLimitInterceptor implements HandlerInterceptor {
     private final RateLimiter rateLimiter;
     private final ObjectMapper objectMapper;
     private final String defaultTenant;
+    private final JobMetrics metrics;
 
     public RateLimitInterceptor(RateLimiter rateLimiter, ObjectMapper objectMapper,
-                                SchedulerProperties properties) {
+                                SchedulerProperties properties, JobMetrics metrics) {
         this.rateLimiter = rateLimiter;
         this.objectMapper = objectMapper;
         this.defaultTenant = properties.defaultTenant();
+        this.metrics = metrics;
     }
 
     @Override
@@ -42,6 +45,7 @@ public class RateLimitInterceptor implements HandlerInterceptor {
             return true;
         }
 
+        metrics.rateLimited();
         long retryAfterSeconds = Math.max(1, (decision.retryAfterMillis() + 999) / 1000);
         ProblemDetail problem = ProblemDetail.forStatusAndDetail(HttpStatus.TOO_MANY_REQUESTS,
                 "Rate limit exceeded for this tenant. Retry in " + retryAfterSeconds + "s.");
