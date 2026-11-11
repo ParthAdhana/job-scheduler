@@ -6,6 +6,7 @@ import jakarta.validation.constraints.NotBlank;
 import jakarta.validation.constraints.Pattern;
 import jakarta.validation.constraints.Size;
 
+import com.jobscheduler.job.JobPriority;
 import com.jobscheduler.job.NewJob;
 
 import java.time.Instant;
@@ -23,9 +24,11 @@ public record CreateJobRequest(
         Integer maxAttempts,
         /* Optional Spring cron expression (6 fields, seconds first) to repeat the job. */
         @Size(max = 100)
-        String cron) {
+        String cron,
+        /* HIGH, NORMAL (default) or LOW. */
+        JobPriority priority) {
 
     public NewJob toNewJob() {
-        return new NewJob(type, payload, runAt, maxAttempts, cron);
+        return new NewJob(type, payload, runAt, maxAttempts, cron, priority);
     }
 }

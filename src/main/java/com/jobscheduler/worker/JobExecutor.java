@@ -19,6 +19,7 @@ import java.util.UUID;
 import java.util.concurrent.Executors;
 import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.ScheduledFuture;
+import java.util.concurrent.ThreadLocalRandom;
 import java.util.concurrent.TimeUnit;
 
 /**
@@ -37,6 +38,7 @@ public class JobExecutor {
     private final JobDispatcher dispatcher;
     private final Recurrence recurrence;
     private final RetryPolicy retryPolicy;
+    private final ConcurrencyLimiter concurrency;
     private final TransactionTemplate tx;
     private final Clock clock;
     private final Duration leaseDuration;
@@ -45,13 +47,15 @@ public class JobExecutor {
             Thread.ofPlatform().name("lease-heartbeat").daemon().factory());
 
     public JobExecutor(JobStore store, JobHandlerRegistry handlers, JobDispatcher dispatcher,
-                       Recurrence recurrence, RetryPolicy retryPolicy, TransactionTemplate tx,
+                       Recurrence recurrence, RetryPolicy retryPolicy, ConcurrencyLimiter concurrency,
+                       TransactionTemplate tx,
                        SchedulerProperties properties, Clock clock) {
         this.store = store;
         this.handlers = handlers;
         this.dispatcher = dispatcher;
         this.recurrence = recurrence;
         this.retryPolicy = retryPolicy;
+        this.concurrency = concurrency;
         this.tx = tx;
         this.clock = clock;
         this.leaseDuration = properties.worker().leaseDuration();
@@ -59,12 +63,35 @@ public class JobExecutor {
     }
 
     public void process(JobMessage message) {
-        Optional<ClaimedJob> claimed = tx.execute(status -> claim(message));
-        if (claimed == null || claimed.isEmpty()) {
-            log.debug("Skipping message {} for job {}: not claimable", message.messageId(), message.jobId());
+        String permit = message.messageId().toString();
+        if (!concurrency.tryAcquire(message.type(), permit)) {
+            defer(message);
             return;
         }
-        run(claimed.get());
+        try {
+            Optional<ClaimedJob> claimed = tx.execute(status -> claim(message));
+            if (claimed == null || claimed.isEmpty()) {
+                log.debug("Skipping message {} for job {}: not claimable", message.messageId(), message.jobId());
+                return;
+            }
+            run(claimed.get());
+        } finally {
+            concurrency.release(message.type(), permit);
+        }
+    }
+
+    /** The type is at its concurrency limit: put the job back without spending an attempt. */
+    private void defer(JobMessage message) {
+        tx.executeWithoutResult(status -> {
+            Instant now = clock.instant();
+            if (!store.markMessageProcessed(message.messageId(), now)) {
+                return;
+            }
+            Instant retryAt = now.plusMillis(500 + ThreadLocalRandom.current().nextLong(500));
+            if (store.deferQueued(message.jobId(), message.attempt(), retryAt, now)) {
+                log.debug("Job {} ({}) deferred: concurrency limit reached", message.jobId(), message.type());
+            }
+        });
     }
 
     private Optional<ClaimedJob> claim(JobMessage message) {

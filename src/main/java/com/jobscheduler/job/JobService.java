@@ -62,6 +62,9 @@ public class JobService {
         }
         int attempts = request.maxAttempts() == null ? properties.defaultMaxAttempts() : request.maxAttempts();
         Job job = Job.create(tenantId, request.type(), request.payload(), runAt, attempts, request.cron(), now);
+        if (request.priority() != null) {
+            job.setPriority(request.priority());
+        }
         if (idempotencyKey != null) {
             job.assignIdempotencyKey(idempotencyKey, requestHash);
         }
@@ -69,7 +72,7 @@ public class JobService {
         if (job.isDue(now)) {
             // Due already: queue it in this same transaction rather than waiting for the poller.
             job.markQueued(now);
-            dispatcher.dispatch(job.getId(), tenantId, type, 1);
+            dispatcher.dispatch(job.getId(), tenantId, type, job.getPriority(), 1);
         }
         return jobs.save(job);
     }
@@ -96,7 +99,7 @@ public class JobService {
     public Job replay(String tenantId, UUID id) {
         Job job = get(tenantId, id);
         job.replay(clock.instant());
-        dispatcher.dispatch(job.getId(), tenantId, job.getType(), 1);
+        dispatcher.dispatch(job.getId(), tenantId, job.getType(), job.getPriority(), 1);
         return job;
     }
 

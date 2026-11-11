@@ -68,6 +68,10 @@ public class Job {
     @Column(name = "parent_job_id")
     private UUID parentJobId;
 
+    @Enumerated(EnumType.STRING)
+    @Column(nullable = false)
+    private JobPriority priority = JobPriority.NORMAL;
+
     @Column(name = "idempotency_key")
     private String idempotencyKey;
 
@@ -101,6 +105,10 @@ public class Job {
         job.createdAt = now;
         job.updatedAt = now;
         return job;
+    }
+
+    public void setPriority(JobPriority priority) {
+        this.priority = priority;
     }
 
     public void assignIdempotencyKey(String key, String hash) {
@@ -159,6 +167,7 @@ public class Job {
     public Instant getLeaseExpiresAt() { return leaseExpiresAt; }
     public Long getVersion() { return version; }
     public String getCron() { return cron; }
+    public JobPriority getPriority() { return priority; }
     public String getIdempotencyKey() { return idempotencyKey; }
     public String getRequestHash() { return requestHash; }
     public UUID getParentJobId() { return parentJobId; }

@@ -44,7 +44,7 @@ public class DueJobPoller {
     public void queueDueJobs() {
         List<DueJob> due = store.queueDueJobs(clock.instant(), properties.poller().batchSize());
         for (DueJob job : due) {
-            dispatcher.dispatch(job.id(), job.tenantId(), job.type(), job.attempts() + 1);
+            dispatcher.dispatch(job.id(), job.tenantId(), job.type(), job.priority(), job.attempts() + 1);
         }
         if (!due.isEmpty()) {
             log.debug("Queued {} due jobs", due.size());

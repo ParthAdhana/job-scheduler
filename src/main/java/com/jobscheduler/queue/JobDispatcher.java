@@ -1,5 +1,6 @@
 package com.jobscheduler.queue;
 
+import com.jobscheduler.job.JobPriority;
 import org.springframework.stereotype.Component;
 
 import java.time.Instant;
@@ -15,9 +16,9 @@ public class JobDispatcher {
         this.outbox = outbox;
     }
 
-    public void dispatch(UUID jobId, String tenantId, String type, int nextAttempt) {
+    public void dispatch(UUID jobId, String tenantId, String type, JobPriority priority, int nextAttempt) {
         var message = new JobMessage(UUID.randomUUID(), jobId, tenantId, type, nextAttempt);
-        outbox.append(Topics.READY, message.messageId(), jobId.toString(), message);
+        outbox.append(Topics.ready(priority), message.messageId(), jobId.toString(), message);
     }
 
     public void deadLetter(UUID jobId, String tenantId, String type, int attempts, String error, Instant now) {
