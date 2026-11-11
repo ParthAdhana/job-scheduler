@@ -54,3 +54,11 @@ scheduler:
     enabled: true
     concurrency: 3
     lease-duration: 30s
+  retry:
+    base-delay: 1s
+    max-delay: 5m
+  poller:
+    enabled: true
+    interval-ms: 500
+    reaper-interval-ms: 5000
+    batch-size: 100

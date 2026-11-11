@@ -1,6 +1,7 @@
 package com.jobscheduler.api;
 
 import com.jobscheduler.job.IllegalJobStateException;
+import com.jobscheduler.job.InvalidCronException;
 import com.jobscheduler.job.JobNotFoundException;
 import com.jobscheduler.job.UnknownJobTypeException;
 import org.springframework.http.HttpHeaders;
@@ -36,8 +37,8 @@ public class ApiExceptionHandler extends ResponseEntityExceptionHandler {
         return ProblemDetail.forStatusAndDetail(HttpStatus.CONFLICT, ex.getMessage());
     }
 
-    @ExceptionHandler(UnknownJobTypeException.class)
-    ProblemDetail handleUnknownType(UnknownJobTypeException ex) {
+    @ExceptionHandler({UnknownJobTypeException.class, InvalidCronException.class})
+    ProblemDetail handleBadJobDefinition(RuntimeException ex) {
         return ProblemDetail.forStatusAndDetail(HttpStatus.BAD_REQUEST, ex.getMessage());
     }
 

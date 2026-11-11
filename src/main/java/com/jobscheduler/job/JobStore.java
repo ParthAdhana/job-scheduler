@@ -9,6 +9,7 @@ import java.sql.ResultSet;
 import java.sql.SQLException;
 import java.sql.Timestamp;
 import java.time.Instant;
+import java.util.List;
 import java.util.Map;
 import java.util.Optional;
 import java.util.UUID;
@@ -45,7 +46,7 @@ public class JobStore {
                         SET status = 'RUNNING', attempts = attempts + 1, locked_by = :workerId,
                             lease_expires_at = :leaseUntil, updated_at = :now, version = version + 1
                         WHERE id = :id AND status = 'QUEUED' AND attempts = :previousAttempts
-                        RETURNING id, tenant_id, type, payload::text AS payload, attempts, max_attempts
+                        RETURNING id, tenant_id, type, payload::text AS payload, attempts, max_attempts, cron
                         """)
                 .param("id", jobId)
                 .param("previousAttempts", attempt - 1)
@@ -89,6 +90,116 @@ public class JobStore {
                 .update() == 1;
     }
 
+    /** RUNNING -> RETRYING: wait until {@code retryAt}, then the poller queues it again. */
+    public boolean markRetrying(ClaimedJob job, String workerId, String error, Instant retryAt, Instant now) {
+        return jdbc.sql("""
+                        UPDATE jobs
+                        SET status = 'RETRYING', run_at = :retryAt, updated_at = :now,
+                            locked_by = NULL, lease_expires_at = NULL, last_error = :error,
+                            version = version + 1
+                        WHERE id = :id AND status = 'RUNNING' AND locked_by = :workerId AND attempts = :attempt
+                        """)
+                .param("id", job.id())
+                .param("workerId", workerId)
+                .param("attempt", job.attempt())
+                .param("retryAt", ts(retryAt))
+                .param("error", truncate(error))
+                .param("now", ts(now))
+                .update() == 1;
+    }
+
+    /** Pushes the lease forward while a long handler is still working. */
+    public boolean extendLease(ClaimedJob job, String workerId, Instant leaseUntil) {
+        return jdbc.sql("""
+                        UPDATE jobs SET lease_expires_at = :leaseUntil
+                        WHERE id = :id AND status = 'RUNNING' AND locked_by = :workerId AND attempts = :attempt
+                        """)
+                .param("id", job.id())
+                .param("workerId", workerId)
+                .param("attempt", job.attempt())
+                .param("leaseUntil", ts(leaseUntil))
+                .update() == 1;
+    }
+
+    /**
+     * PENDING/RETRYING -> QUEUED for jobs whose time has come. {@code SKIP LOCKED} lets several
+     * pollers run at once: each grabs a different batch instead of waiting on the others' locks.
+     */
+    public List<DueJob> queueDueJobs(Instant now, int limit) {
+        return jdbc.sql("""
+                        UPDATE jobs SET status = 'QUEUED', updated_at = :now, version = version + 1
+                        WHERE id IN (
+                            SELECT id FROM jobs
+                            WHERE status IN ('PENDING', 'RETRYING') AND run_at <= :now
+                            ORDER BY run_at
+                            LIMIT :limit
+                            FOR UPDATE SKIP LOCKED)
+                        RETURNING id, tenant_id, type, attempts
+                        """)
+                .param("now", ts(now))
+                .param("limit", limit)
+                .query((rs, n) -> new DueJob(rs.getObject("id", UUID.class), rs.getString("tenant_id"),
+                        rs.getString("type"), rs.getInt("attempts")))
+                .list();
+    }
+
+    /**
+     * Takes back RUNNING jobs whose lease has expired, treating the lost run as a failed attempt:
+     * RETRYING if attempts remain, otherwise FAILED.
+     */
+    public List<ExpiredLease> reapExpiredLeases(Instant now, int limit) {
+        return jdbc.sql("""
+                        UPDATE jobs
+                        SET status = CASE WHEN attempts >= max_attempts THEN 'FAILED' ELSE 'RETRYING' END,
+                            completed_at = CASE WHEN attempts >= max_attempts THEN CAST(:now AS timestamptz) END,
+                            run_at = :now, updated_at = :now,
+                            last_error = 'Lease expired: worker ' || COALESCE(locked_by, '?') || ' stopped responding',
+                            locked_by = NULL, lease_expires_at = NULL, version = version + 1
+                        WHERE id IN (
+                            SELECT id FROM jobs
+                            WHERE status = 'RUNNING' AND lease_expires_at < :now
+                            LIMIT :limit
+                            FOR UPDATE SKIP LOCKED)
+                        RETURNING id, tenant_id, type, status, attempts, cron
+                        """)
+                .param("now", ts(now))
+                .param("limit", limit)
+                .query((rs, n) -> new ExpiredLease(rs.getObject("id", UUID.class), rs.getString("tenant_id"),
+                        rs.getString("type"), JobStatus.valueOf(rs.getString("status")),
+                        rs.getInt("attempts"), rs.getString("cron")))
+                .list();
+    }
+
+    /** Inserts the next occurrence of a recurring job, copying the finished one. */
+    public UUID scheduleNextOccurrence(UUID finishedJobId, Instant runAt, Instant now) {
+        UUID nextId = UUID.randomUUID();
+        jdbc.sql("""
+                        INSERT INTO jobs (id, tenant_id, type, payload, status, run_at, attempts, max_attempts,
+                                          cron, parent_job_id, created_at, updated_at)
+                        SELECT :nextId, tenant_id, type, payload, 'PENDING', :runAt, 0, max_attempts,
+                               cron, id, :now, :now
+                        FROM jobs WHERE id = :id
+                        """)
+                .param("nextId", nextId)
+                .param("id", finishedJobId)
+                .param("runAt", ts(runAt))
+                .param("now", ts(now))
+                .update();
+        return nextId;
+    }
+
+    public List<JobAttempt> attempts(UUID jobId) {
+        return jdbc.sql("""
+                        SELECT attempt_number, worker_id, outcome, error, started_at, finished_at
+                        FROM job_attempts WHERE job_id = :jobId ORDER BY id
+                        """)
+                .param("jobId", jobId)
+                .query((rs, n) -> new JobAttempt(rs.getInt("attempt_number"), rs.getString("worker_id"),
+                        rs.getString("outcome"), rs.getString("error"),
+                        toInstant(rs.getTimestamp("started_at")), toInstant(rs.getTimestamp("finished_at"))))
+                .list();
+    }
+
     public void recordAttemptStarted(ClaimedJob job, String workerId, Instant now) {
         jdbc.sql("""
                         INSERT INTO job_attempts (job_id, attempt_number, worker_id, outcome, started_at)
@@ -104,7 +215,7 @@ public class JobStore {
     public void recordAttemptFinished(UUID jobId, int attempt, boolean succeeded, String error, Instant now) {
         jdbc.sql("""
                         UPDATE job_attempts SET outcome = :outcome, error = :error, finished_at = :now
-                        WHERE job_id = :jobId AND attempt_number = :attempt
+                        WHERE job_id = :jobId AND attempt_number = :attempt AND outcome = 'RUNNING'
                         """)
                 .param("jobId", jobId)
                 .param("attempt", attempt)
@@ -118,10 +229,14 @@ public class JobStore {
         try {
             return new ClaimedJob(rs.getObject("id", UUID.class), rs.getString("tenant_id"),
                     rs.getString("type"), objectMapper.readValue(rs.getString("payload"), MAP),
-                    rs.getInt("attempts"), rs.getInt("max_attempts"));
+                    rs.getInt("attempts"), rs.getInt("max_attempts"), rs.getString("cron"));
         } catch (Exception e) {
             throw new SQLException("Could not read payload of job " + rs.getString("id"), e);
         }
+    }
+
+    private static Instant toInstant(Timestamp timestamp) {
+        return timestamp == null ? null : timestamp.toInstant();
     }
 
     static Timestamp ts(Instant instant) {

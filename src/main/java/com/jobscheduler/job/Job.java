@@ -63,6 +63,11 @@ public class Job {
     @Column(name = "lease_expires_at")
     private Instant leaseExpiresAt;
 
+    private String cron;
+
+    @Column(name = "parent_job_id")
+    private UUID parentJobId;
+
     /** Workers update jobs with plain SQL that also bumps this, so JPA notices concurrent changes. */
     @Version
     private Long version;
@@ -73,6 +78,11 @@ public class Job {
 
     public static Job create(String tenantId, String type, Map<String, Object> payload,
                              Instant runAt, int maxAttempts, Instant now) {
+        return create(tenantId, type, payload, runAt, maxAttempts, null, now);
+    }
+
+    public static Job create(String tenantId, String type, Map<String, Object> payload,
+                             Instant runAt, int maxAttempts, String cron, Instant now) {
         Job job = new Job();
         job.id = UUID.randomUUID();
         job.tenantId = tenantId;
@@ -81,6 +91,7 @@ public class Job {
         job.status = JobStatus.PENDING;
         job.runAt = runAt == null ? now : runAt;
         job.maxAttempts = maxAttempts;
+        job.cron = cron;
         job.createdAt = now;
         job.updatedAt = now;
         return job;
@@ -97,6 +108,19 @@ public class Job {
 
     public boolean isDue(Instant now) {
         return !runAt.isAfter(now);
+    }
+
+    /** Give a dead-lettered job a fresh set of attempts, starting now. */
+    public void replay(Instant now) {
+        if (status != JobStatus.FAILED) {
+            throw new IllegalJobStateException(id, status, JobStatus.QUEUED);
+        }
+        status = JobStatus.QUEUED;
+        attempts = 0;
+        lastError = null;
+        completedAt = null;
+        runAt = now;
+        updatedAt = now;
     }
 
     public void cancel(Instant now) {
@@ -123,4 +147,6 @@ public class Job {
     public String getLockedBy() { return lockedBy; }
     public Instant getLeaseExpiresAt() { return leaseExpiresAt; }
     public Long getVersion() { return version; }
+    public String getCron() { return cron; }
+    public UUID getParentJobId() { return parentJobId; }
 }

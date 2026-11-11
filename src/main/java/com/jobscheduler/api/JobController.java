@@ -1,6 +1,7 @@
 package com.jobscheduler.api;
 
 import com.jobscheduler.job.Job;
+import com.jobscheduler.job.JobAttempt;
 import com.jobscheduler.job.JobService;
 import com.jobscheduler.job.JobStatus;
 import jakarta.validation.Valid;
@@ -19,6 +20,7 @@ import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
 import org.springframework.web.servlet.support.ServletUriComponentsBuilder;
 
+import java.util.List;
 import java.util.UUID;
 
 @RestController
@@ -37,8 +39,7 @@ public class JobController {
     public ResponseEntity<JobResponse> create(
             @RequestHeader(name = TENANT_HEADER, defaultValue = "${scheduler.default-tenant}") String tenantId,
             @Valid @RequestBody CreateJobRequest request) {
-        Job job = jobService.create(tenantId, request.type(), request.payload(),
-                request.runAt(), request.maxAttempts());
+        Job job = jobService.create(tenantId, request.toNewJob());
         var location = ServletUriComponentsBuilder.fromCurrentRequest()
                 .path("/{id}").buildAndExpand(job.getId()).toUri();
         return ResponseEntity.created(location).body(JobResponse.from(job));
@@ -59,6 +60,21 @@ public class JobController {
             @RequestParam(defaultValue = "20") @Min(1) @Max(100) int size) {
         var pageable = PageRequest.of(page, size, Sort.by(Sort.Direction.DESC, "createdAt"));
         return PageResponse.from(jobService.list(tenantId, status, pageable), JobResponse::from);
+    }
+
+    @GetMapping("/{id}/attempts")
+    public List<JobAttempt> attempts(
+            @RequestHeader(name = TENANT_HEADER, defaultValue = "${scheduler.default-tenant}") String tenantId,
+            @PathVariable UUID id) {
+        return jobService.attempts(tenantId, id);
+    }
+
+    /** Re-run a job that ended FAILED, with a fresh set of attempts. */
+    @PostMapping("/{id}/replay")
+    public JobResponse replay(
+            @RequestHeader(name = TENANT_HEADER, defaultValue = "${scheduler.default-tenant}") String tenantId,
+            @PathVariable UUID id) {
+        return JobResponse.from(jobService.replay(tenantId, id));
     }
 
     @PostMapping("/{id}/cancel")

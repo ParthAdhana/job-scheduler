@@ -18,11 +18,14 @@ public record JobResponse(
         String lastError,
         Instant createdAt,
         Instant updatedAt,
-        Instant completedAt) {
+        Instant completedAt,
+        String cron,
+        UUID parentJobId) {
 
     public static JobResponse from(Job job) {
         return new JobResponse(job.getId(), job.getType(), job.getPayload(), job.getStatus(),
                 job.getRunAt(), job.getAttempts(), job.getMaxAttempts(), job.getLastError(),
-                job.getCreatedAt(), job.getUpdatedAt(), job.getCompletedAt());
+                job.getCreatedAt(), job.getUpdatedAt(), job.getCompletedAt(), job.getCron(),
+                job.getParentJobId());
     }
 }
