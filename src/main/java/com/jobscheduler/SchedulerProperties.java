@@ -14,7 +14,8 @@ public record SchedulerProperties(
         @DefaultValue Outbox outbox,
         @DefaultValue Worker worker,
         @DefaultValue Retry retry,
-        @DefaultValue Poller poller) {
+        @DefaultValue Poller poller,
+        @DefaultValue Idempotency idempotency) {
 
     public record Outbox(
             @DefaultValue("true") boolean enabled,
@@ -31,6 +32,9 @@ public record SchedulerProperties(
     public record Retry(
             @DefaultValue("1s") Duration baseDelay,
             @DefaultValue("5m") Duration maxDelay) {
+    }
+
+    public record Idempotency(@DefaultValue("24h") Duration ttl) {
     }
 
     /** Moves due jobs into the queue and takes back jobs from dead workers. */

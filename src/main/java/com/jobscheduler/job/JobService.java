@@ -12,6 +12,7 @@ import org.springframework.transaction.annotation.Transactional;
 import java.time.Clock;
 import java.time.Instant;
 import java.util.List;
+import java.util.Optional;
 import java.util.UUID;
 
 @Service
@@ -36,6 +37,16 @@ public class JobService {
 
     @Transactional
     public Job create(String tenantId, NewJob request) {
+        return create(tenantId, request, null, null);
+    }
+
+    /**
+     * Creates the job, queueing it immediately if it is already due. With an idempotency key, a
+     * concurrent duplicate makes this fail on the unique index at commit; see
+     * {@link com.jobscheduler.idempotency.JobSubmissionService}.
+     */
+    @Transactional
+    public Job create(String tenantId, NewJob request, String idempotencyKey, String requestHash) {
         if (!handlers.supports(request.type())) {
             throw new UnknownJobTypeException(request.type(), handlers.types());
         }
@@ -51,6 +62,9 @@ public class JobService {
         }
         int attempts = request.maxAttempts() == null ? properties.defaultMaxAttempts() : request.maxAttempts();
         Job job = Job.create(tenantId, request.type(), request.payload(), runAt, attempts, request.cron(), now);
+        if (idempotencyKey != null) {
+            job.assignIdempotencyKey(idempotencyKey, requestHash);
+        }
         String type = request.type();
         if (job.isDue(now)) {
             // Due already: queue it in this same transaction rather than waiting for the poller.
@@ -63,6 +77,11 @@ public class JobService {
     @Transactional(readOnly = true)
     public Job get(String tenantId, UUID id) {
         return jobs.findByIdAndTenantId(id, tenantId).orElseThrow(() -> new JobNotFoundException(id));
+    }
+
+    @Transactional(readOnly = true)
+    public Optional<Job> findByIdempotencyKey(String tenantId, String idempotencyKey) {
+        return jobs.findByTenantIdAndIdempotencyKey(tenantId, idempotencyKey);
     }
 
     @Transactional(readOnly = true)

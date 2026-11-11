@@ -1,5 +1,6 @@
 package com.jobscheduler.api;
 
+import com.jobscheduler.idempotency.IdempotencyKeyReusedException;
 import com.jobscheduler.job.IllegalJobStateException;
 import com.jobscheduler.job.InvalidCronException;
 import com.jobscheduler.job.JobNotFoundException;
@@ -14,9 +15,13 @@ import org.springframework.validation.FieldError;
 import org.springframework.web.bind.MethodArgumentNotValidException;
 import org.springframework.web.bind.annotation.ExceptionHandler;
 import org.springframework.web.bind.annotation.RestControllerAdvice;
+import org.springframework.validation.method.ParameterErrors;
+import org.springframework.validation.method.ParameterValidationResult;
 import org.springframework.web.context.request.WebRequest;
+import org.springframework.web.method.annotation.HandlerMethodValidationException;
 import org.springframework.web.servlet.mvc.method.annotation.ResponseEntityExceptionHandler;
 
+import java.util.LinkedHashMap;
 import java.util.Map;
 import java.util.stream.Collectors;
 
@@ -32,8 +37,8 @@ public class ApiExceptionHandler extends ResponseEntityExceptionHandler {
         return ProblemDetail.forStatusAndDetail(HttpStatus.NOT_FOUND, ex.getMessage());
     }
 
-    @ExceptionHandler(IllegalJobStateException.class)
-    ProblemDetail handleIllegalState(IllegalJobStateException ex) {
+    @ExceptionHandler({IllegalJobStateException.class, IdempotencyKeyReusedException.class})
+    ProblemDetail handleConflict(RuntimeException ex) {
         return ProblemDetail.forStatusAndDetail(HttpStatus.CONFLICT, ex.getMessage());
     }
 
@@ -56,6 +61,29 @@ public class ApiExceptionHandler extends ResponseEntityExceptionHandler {
         Map<String, String> errors = ex.getBindingResult().getFieldErrors().stream()
                 .collect(Collectors.toMap(FieldError::getField,
                         e -> String.valueOf(e.getDefaultMessage()), (first, second) -> first));
+        ProblemDetail problem = ex.getBody();
+        problem.setProperty("errors", errors);
+        return handleExceptionInternal(ex, problem, headers, status, request);
+    }
+
+    /**
+     * Same shape for methods that also validate headers or query parameters, where Spring reports
+     * body and parameter errors together.
+     */
+    @Override
+    protected ResponseEntity<Object> handleHandlerMethodValidationException(
+            HandlerMethodValidationException ex, HttpHeaders headers, HttpStatusCode status, WebRequest request) {
+        Map<String, String> errors = new LinkedHashMap<>();
+        for (ParameterValidationResult result : ex.getParameterValidationResults()) {
+            if (result instanceof ParameterErrors parameterErrors) {
+                parameterErrors.getFieldErrors().forEach(e ->
+                        errors.putIfAbsent(e.getField(), String.valueOf(e.getDefaultMessage())));
+            } else {
+                String name = result.getMethodParameter().getParameterName();
+                result.getResolvableErrors().forEach(e ->
+                        errors.putIfAbsent(name, String.valueOf(e.getDefaultMessage())));
+            }
+        }
         ProblemDetail problem = ex.getBody();
         problem.setProperty("errors", errors);
         return handleExceptionInternal(ex, problem, headers, status, request);
