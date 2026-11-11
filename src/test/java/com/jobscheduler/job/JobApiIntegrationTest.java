@@ -1,17 +1,10 @@
 package com.jobscheduler.job;
 
-import com.fasterxml.jackson.databind.JsonNode;
-import com.fasterxml.jackson.databind.ObjectMapper;
+import com.jobscheduler.support.IntegrationTest;
 import org.junit.jupiter.api.Test;
-import org.springframework.beans.factory.annotation.Autowired;
-import org.springframework.boot.test.autoconfigure.web.servlet.AutoConfigureMockMvc;
-import org.springframework.boot.test.context.SpringBootTest;
-import org.springframework.boot.testcontainers.service.connection.ServiceConnection;
 import org.springframework.http.MediaType;
-import org.springframework.test.web.servlet.MockMvc;
-import org.testcontainers.containers.PostgreSQLContainer;
-import org.testcontainers.junit.jupiter.Container;
-import org.testcontainers.junit.jupiter.Testcontainers;
+
+import java.util.UUID;
 
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
@@ -19,28 +12,19 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
 
-@SpringBootTest
-@AutoConfigureMockMvc
-@Testcontainers
-class JobApiIntegrationTest {
+class JobApiIntegrationTest extends IntegrationTest {
 
-    @Container
-    @ServiceConnection
-    static PostgreSQLContainer<?> postgres = new PostgreSQLContainer<>("postgres:16-alpine");
-
-    @Autowired
-    MockMvc mvc;
-
-    @Autowired
-    ObjectMapper objectMapper;
+    /** Far enough ahead that background workers leave these jobs alone during the test. */
+    private static final String LATER = "\"runAt\": \"2099-01-01T00:00:00Z\"";
 
     @Test
     void createThenFetchJob() throws Exception {
-        String id = createJob("tenant-a", """
-                {"type": "send-email", "payload": {"to": "a@example.com"}, "maxAttempts": 5}
-                """);
+        String tenant = uniqueTenant();
+        UUID id = submit(tenant, """
+                {"type": "noop", "payload": {"to": "a@example.com"}, "maxAttempts": 5, %s}
+                """.formatted(LATER));
 
-        mvc.perform(get("/jobs/{id}", id).header("X-Tenant-Id", "tenant-a"))
+        mvc.perform(get("/jobs/{id}", id).header("X-Tenant-Id", tenant))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.status").value("PENDING"))
                 .andExpect(jsonPath("$.payload.to").value("a@example.com"))
@@ -48,10 +32,19 @@ class JobApiIntegrationTest {
     }
 
     @Test
+    void createReturnsLocationHeader() throws Exception {
+        mvc.perform(post("/jobs").contentType(MediaType.APPLICATION_JSON).content("""
+                        {"type": "noop", %s}
+                        """.formatted(LATER)))
+                .andExpect(status().isCreated())
+                .andExpect(header().exists("Location"));
+    }
+
+    @Test
     void jobsAreIsolatedByTenant() throws Exception {
-        String id = createJob("tenant-a", """
-                {"type": "send-email"}
-                """);
+        UUID id = submit("tenant-a", """
+                {"type": "noop", %s}
+                """.formatted(LATER));
 
         mvc.perform(get("/jobs/{id}", id).header("X-Tenant-Id", "tenant-b"))
                 .andExpect(status().isNotFound());
@@ -59,32 +52,34 @@ class JobApiIntegrationTest {
 
     @Test
     void cancelPendingJobThenRejectSecondCancel() throws Exception {
-        String id = createJob("tenant-c", """
-                {"type": "resize-image"}
-                """);
+        String tenant = uniqueTenant();
+        UUID id = submit(tenant, """
+                {"type": "sleep", %s}
+                """.formatted(LATER));
 
-        mvc.perform(post("/jobs/{id}/cancel", id).header("X-Tenant-Id", "tenant-c"))
+        mvc.perform(post("/jobs/{id}/cancel", id).header("X-Tenant-Id", tenant))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.status").value("CANCELLED"));
 
-        mvc.perform(post("/jobs/{id}/cancel", id).header("X-Tenant-Id", "tenant-c"))
+        mvc.perform(post("/jobs/{id}/cancel", id).header("X-Tenant-Id", tenant))
                 .andExpect(status().isConflict());
     }
 
     @Test
     void listFiltersByStatus() throws Exception {
-        createJob("tenant-d", """
-                {"type": "a"}
-                """);
-        String cancelled = createJob("tenant-d", """
-                {"type": "b"}
-                """);
-        mvc.perform(post("/jobs/{id}/cancel", cancelled).header("X-Tenant-Id", "tenant-d"));
+        String tenant = uniqueTenant();
+        submit(tenant, """
+                {"type": "noop", %s}
+                """.formatted(LATER));
+        UUID cancelled = submit(tenant, """
+                {"type": "sleep", %s}
+                """.formatted(LATER));
+        mvc.perform(post("/jobs/{id}/cancel", cancelled).header("X-Tenant-Id", tenant));
 
-        mvc.perform(get("/jobs").param("status", "PENDING").header("X-Tenant-Id", "tenant-d"))
+        mvc.perform(get("/jobs").param("status", "PENDING").header("X-Tenant-Id", tenant))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.totalItems").value(1))
-                .andExpect(jsonPath("$.items[0].type").value("a"));
+                .andExpect(jsonPath("$.items[0].type").value("noop"));
     }
 
     @Test
@@ -101,15 +96,13 @@ class JobApiIntegrationTest {
                 .andExpect(status().isBadRequest());
     }
 
-    private String createJob(String tenant, String body) throws Exception {
-        String response = mvc.perform(post("/jobs")
-                        .header("X-Tenant-Id", tenant)
-                        .contentType(MediaType.APPLICATION_JSON)
-                        .content(body))
-                .andExpect(status().isCreated())
-                .andExpect(header().exists("Location"))
-                .andReturn().getResponse().getContentAsString();
-        JsonNode json = objectMapper.readTree(response);
-        return json.get("id").asText();
+    @Test
+    void rejectsUnknownJobType() throws Exception {
+        mvc.perform(post("/jobs").contentType(MediaType.APPLICATION_JSON)
+                        .content("""
+                                {"type": "does-not-exist"}
+                                """))
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.detail").value(org.hamcrest.Matchers.containsString("noop")));
     }
 }

@@ -15,6 +15,19 @@ spring:
         jdbc.time_zone: UTC
   flyway:
     enabled: true
+  kafka:
+    bootstrap-servers: ${KAFKA_BOOTSTRAP_SERVERS:localhost:9092}
+    producer:
+      # Wait for all in-sync replicas and let the broker drop producer retries it has already seen.
+      acks: all
+      properties:
+        enable.idempotence: true
+    consumer:
+      group-id: job-workers
+      auto-offset-reset: earliest
+    listener:
+      # Commit each offset after its record is processed.
+      ack-mode: record
 
 server:
   port: 8080
@@ -32,3 +45,12 @@ springdoc:
 scheduler:
   default-tenant: default
   default-max-attempts: 3
+  instance-id: ${HOSTNAME:local}
+  outbox:
+    enabled: true
+    poll-interval-ms: 200
+    batch-size: 100
+  worker:
+    enabled: true
+    concurrency: 3
+    lease-duration: 30s
