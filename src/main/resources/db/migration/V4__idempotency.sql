@@ -1,4 +1,4 @@
--- Day 4: idempotent submission and consumer-side deduplication.
+-- Idempotent submission and consumer-side deduplication.
 
 -- The client's Idempotency-Key and a hash of the request body it was first used with.
 ALTER TABLE jobs ADD COLUMN idempotency_key VARCHAR(255);

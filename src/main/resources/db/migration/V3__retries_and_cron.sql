@@ -1,4 +1,4 @@
--- Day 3: recurring jobs and the indexes the poller and reaper scan.
+-- Recurring jobs and the indexes the poller and reaper scan.
 
 -- A Spring cron expression (6 fields, seconds first). When an occurrence finishes, the next one
 -- is inserted as a new job pointing back at it.
