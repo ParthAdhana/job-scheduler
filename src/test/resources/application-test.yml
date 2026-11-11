@@ -1,0 +1,8 @@
+# Short intervals so tests that wait on background work finish quickly.
+scheduler:
+  instance-id: test
+  outbox:
+    poll-interval-ms: 50
+  worker:
+    concurrency: 2
+    lease-duration: 10s

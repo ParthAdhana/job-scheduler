@@ -2,11 +2,13 @@ package com.jobscheduler.api;
 
 import com.jobscheduler.job.IllegalJobStateException;
 import com.jobscheduler.job.JobNotFoundException;
+import com.jobscheduler.job.UnknownJobTypeException;
 import org.springframework.http.HttpHeaders;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.HttpStatusCode;
 import org.springframework.http.ProblemDetail;
 import org.springframework.http.ResponseEntity;
+import org.springframework.orm.ObjectOptimisticLockingFailureException;
 import org.springframework.validation.FieldError;
 import org.springframework.web.bind.MethodArgumentNotValidException;
 import org.springframework.web.bind.annotation.ExceptionHandler;
@@ -32,6 +34,18 @@ public class ApiExceptionHandler extends ResponseEntityExceptionHandler {
     @ExceptionHandler(IllegalJobStateException.class)
     ProblemDetail handleIllegalState(IllegalJobStateException ex) {
         return ProblemDetail.forStatusAndDetail(HttpStatus.CONFLICT, ex.getMessage());
+    }
+
+    @ExceptionHandler(UnknownJobTypeException.class)
+    ProblemDetail handleUnknownType(UnknownJobTypeException ex) {
+        return ProblemDetail.forStatusAndDetail(HttpStatus.BAD_REQUEST, ex.getMessage());
+    }
+
+    /** A worker changed the job between our read and our write. The client can retry. */
+    @ExceptionHandler(ObjectOptimisticLockingFailureException.class)
+    ProblemDetail handleConcurrentUpdate(ObjectOptimisticLockingFailureException ex) {
+        return ProblemDetail.forStatusAndDetail(HttpStatus.CONFLICT,
+                "The job was modified concurrently, please retry");
     }
 
     /** Adds per-field messages so clients can see which input was wrong. */

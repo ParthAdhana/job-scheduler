@@ -6,6 +6,7 @@ import jakarta.persistence.EnumType;
 import jakarta.persistence.Enumerated;
 import jakarta.persistence.Id;
 import jakarta.persistence.Table;
+import jakarta.persistence.Version;
 import org.hibernate.annotations.JdbcTypeCode;
 import org.hibernate.type.SqlTypes;
 
@@ -56,6 +57,16 @@ public class Job {
     @Column(name = "completed_at")
     private Instant completedAt;
 
+    @Column(name = "locked_by")
+    private String lockedBy;
+
+    @Column(name = "lease_expires_at")
+    private Instant leaseExpiresAt;
+
+    /** Workers update jobs with plain SQL that also bumps this, so JPA notices concurrent changes. */
+    @Version
+    private Long version;
+
     protected Job() {
         // for JPA
     }
@@ -73,6 +84,19 @@ public class Job {
         job.createdAt = now;
         job.updatedAt = now;
         return job;
+    }
+
+    /** Due now: hand it to the queue. Only valid for a job that has not been queued yet. */
+    public void markQueued(Instant now) {
+        if (status != JobStatus.PENDING) {
+            throw new IllegalJobStateException(id, status, JobStatus.QUEUED);
+        }
+        status = JobStatus.QUEUED;
+        updatedAt = now;
+    }
+
+    public boolean isDue(Instant now) {
+        return !runAt.isAfter(now);
     }
 
     public void cancel(Instant now) {
@@ -96,4 +120,7 @@ public class Job {
     public Instant getCreatedAt() { return createdAt; }
     public Instant getUpdatedAt() { return updatedAt; }
     public Instant getCompletedAt() { return completedAt; }
+    public String getLockedBy() { return lockedBy; }
+    public Instant getLeaseExpiresAt() { return leaseExpiresAt; }
+    public Long getVersion() { return version; }
 }
