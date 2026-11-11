@@ -1,6 +1,7 @@
 package com.jobscheduler.api;
 
 import com.jobscheduler.job.Job;
+import com.jobscheduler.job.JobPriority;
 import com.jobscheduler.job.JobStatus;
 
 import java.time.Instant;
@@ -18,11 +19,15 @@ public record JobResponse(
         String lastError,
         Instant createdAt,
         Instant updatedAt,
-        Instant completedAt) {
+        Instant completedAt,
+        String cron,
+        UUID parentJobId,
+        JobPriority priority) {
 
     public static JobResponse from(Job job) {
         return new JobResponse(job.getId(), job.getType(), job.getPayload(), job.getStatus(),
                 job.getRunAt(), job.getAttempts(), job.getMaxAttempts(), job.getLastError(),
-                job.getCreatedAt(), job.getUpdatedAt(), job.getCompletedAt());
+                job.getCreatedAt(), job.getUpdatedAt(), job.getCompletedAt(), job.getCron(),
+                job.getParentJobId(), job.getPriority());
     }
 }

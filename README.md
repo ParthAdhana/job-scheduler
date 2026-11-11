@@ -1,86 +1,167 @@
 # Distributed Job Scheduler
 
-A job queue where clients submit work over HTTP, jobs run now or at a scheduled time on a pool of workers, failures retry with backoff, duplicate requests are ignored, and noisy tenants are rate limited.
+A distributed job queue built with Java 21, Spring Boot 3.5, PostgreSQL, Kafka and Redis.
 
-Built with Java 21, Spring Boot 3, PostgreSQL, Kafka and Redis.
+## What it does
 
-## Status
+Clients submit jobs over a REST API. A job can run right away, at a set time, or on a cron schedule, and a pool of workers spread across any number of instances runs it.
 
-| Day | Feature | State |
-| --- | --- | --- |
-| 1 | Local stack, schema, Jobs API | Done |
-| 2 | Kafka dispatch (transactional outbox), workers | Planned |
-| 3 | Delayed and cron jobs, retries, dead-letter topic, leases | Planned |
-| 4 | Idempotency (API and consumer) | Planned |
-| 5 | Rate limiting and concurrency caps | Planned |
-| 6 | Integration tests and observability | Planned |
-| 7 | Load test, benchmarks, CI | Planned |
+- **Reliable delivery.** Once the API accepts a job, the job is not lost, even if Kafka or a worker goes down.
+- **Retries with backoff.** Failed attempts are retried with exponential backoff and jitter. A job that runs out of attempts is sent to a dead-letter topic, and you can replay it later.
+- **Crash recovery.** Workers hold a lease on each job they run. If a worker dies, its lease expires and another worker picks the job up.
+- **Idempotency.** Repeating a request with the same `Idempotency-Key` returns the original job instead of creating a duplicate. Redelivered Kafka messages are ignored.
+- **Rate limiting.** Each tenant gets a token bucket, and requests over the limit get `429` with `Retry-After`.
+- **Concurrency caps.** You can limit how many jobs of one type run at once across the whole cluster, for example at most 5 `send-email` jobs.
+- **Priorities.** HIGH, NORMAL and LOW jobs use separate queues, so a backlog of bulk work never delays urgent jobs.
+- **Observability.** Prometheus metrics, a ready-made Grafana dashboard, and structured logs tagged with the job id.
 
-## Run locally
+## Architecture
 
-Requirements: Java 21 and Docker.
-
-```bash
-docker compose up -d          # Postgres, Redis, Kafka, Kafka UI
-./mvnw spring-boot:run        # API on http://localhost:8080
+```mermaid
+flowchart LR
+  C[Client] -->|POST /jobs + Idempotency-Key| API
+  subgraph Instance["Each instance (scale horizontally)"]
+    API[REST API] -->|token bucket| RL{{Redis}}
+    API -->|job + outbox row, one transaction| PG[(PostgreSQL)]
+    R[Outbox relay] -->|SKIP LOCKED| PG
+    P[Due-job poller + lease reaper] -->|SKIP LOCKED| PG
+    W[Workers]
+  end
+  R -->|publish| K{{"Kafka: jobs.ready.high / normal / low"}}
+  K --> W
+  W -->|claim, lease, attempts, dedupe| PG
+  W -->|per-type concurrency permits| RL
+  W -->|out of attempts| DLQ{{jobs.dlq}}
+  Instance -.->|/actuator/prometheus| M[Prometheus + Grafana]
 ```
 
-- API docs: http://localhost:8080/swagger-ui.html
-- Health: http://localhost:8080/actuator/health
-- Kafka UI: http://localhost:8081
+Each component does one job:
 
-Flyway creates the schema on startup (`src/main/resources/db/migration`).
+- **PostgreSQL** is the source of truth for every job: its status, schedule, attempts and lease.
+- **Kafka** carries "this job is ready to run" messages to workers. Each priority has its own topic, and all instances share one consumer group, so each message goes to exactly one worker.
+- **Redis** holds the per-tenant rate limits, the per-type concurrency permits, and a cache of idempotency keys.
 
-Postgres is exposed on host port **5433** (not 5432) so it does not clash with a locally installed Postgres. Connect with `psql -h localhost -p 5433 -U scheduler scheduler` (password `scheduler`).
+### How a job flows
 
-## Run tests
+1. **Submit.** The API checks the tenant's rate limit and the `Idempotency-Key`. In one Postgres transaction it then saves the job and, if the job is due now, an **outbox** row.
+2. **Publish.** The outbox relay sends outbox rows to Kafka and marks them sent. The job and its message are written together, so they can never disagree.
+3. **Wait.** Delayed jobs, retries and cron occurrences wait in Postgres until their `run_at`. Then the poller queues them.
+4. **Run.** A worker claims the job with a conditional `UPDATE`, which only one worker can win. It takes a lease, runs the handler, and renews the lease while the handler runs.
+5. **Finish.** On success the job becomes `SUCCEEDED`. On failure it becomes `RETRYING` with backoff, or `FAILED` when no attempts are left, and in that case it's published to the dead-letter topic. For a cron job, the next occurrence is created.
+6. **Recover.** If a worker stops renewing its lease, the reaper takes the job back and retries it.
+
+The poller, relay and reaper lock rows with `FOR UPDATE SKIP LOCKED`, so every instance can run them at once without a leader.
+
+```
+PENDING ──due──▶ QUEUED ──claim──▶ RUNNING ──▶ SUCCEEDED
+                                      │
+                                      ├─ attempts left ──▶ RETRYING ──due──▶ QUEUED
+                                      └─ none left ──────▶ FAILED ──▶ dead-letter topic (replayable)
+
+PENDING / QUEUED / RETRYING ──cancel──▶ CANCELLED
+```
+
+[docs/DESIGN.md](docs/DESIGN.md) explains the reasoning behind each design choice and has load-test results.
+
+## Running the project
+
+### Prerequisites
+
+- Java 21
+- Docker with Docker Compose
+
+### 1. Start the infrastructure
+
+```bash
+docker compose up -d
+```
+
+This starts PostgreSQL, Redis, Kafka, Kafka UI, Prometheus and Grafana.
+
+### 2. Start the scheduler
+
+```bash
+./mvnw spring-boot:run
+```
+
+On Windows, use `mvnw.cmd spring-boot:run`. The app listens on http://localhost:8080 and creates its database tables on startup.
+
+| What | Where |
+| --- | --- |
+| API docs (Swagger UI) | http://localhost:8080/swagger-ui.html |
+| Grafana dashboard | http://localhost:3000 |
+| Prometheus | http://localhost:9090 |
+| Kafka UI | http://localhost:8081 |
+| PostgreSQL | `localhost:5433`, user and password `scheduler` |
+
+### 3. Submit some jobs
+
+```bash
+# Run now, retrying up to 5 times
+curl -X POST localhost:8080/jobs -H 'Content-Type: application/json' -H 'X-Tenant-Id: acme' \
+  -H 'Idempotency-Key: order-42-receipt' \
+  -d '{"type": "send-email", "payload": {"to": "a@example.com"}, "maxAttempts": 5, "priority": "HIGH"}'
+
+# Run at a specific time
+curl -X POST localhost:8080/jobs -H 'Content-Type: application/json' \
+  -d '{"type": "noop", "runAt": "2026-12-01T09:00:00Z"}'
+
+# Run every 5 minutes (6-field cron with seconds first, in UTC)
+curl -X POST localhost:8080/jobs -H 'Content-Type: application/json' \
+  -d '{"type": "noop", "cron": "0 */5 * * * *"}'
+
+# Check on a job and its attempts
+curl localhost:8080/jobs/<id>
+curl localhost:8080/jobs/<id>/attempts
+```
+
+| Method | Path | Description |
+| --- | --- | --- |
+| `POST` | `/jobs` | Submit a job |
+| `GET` | `/jobs/{id}` | Get a job |
+| `GET` | `/jobs?status=FAILED` | List jobs, newest first |
+| `GET` | `/jobs/{id}/attempts` | Attempt history |
+| `POST` | `/jobs/{id}/cancel` | Cancel a job that hasn't started |
+| `POST` | `/jobs/{id}/replay` | Re-run a failed job |
+
+Requests are scoped to a tenant through the `X-Tenant-Id` header, which defaults to `default`.
+
+The built-in job types are `noop`, `sleep`, `send-email` (fails 10% of the time), `flaky` (fails the first few attempts) and `always-fail`. To add a new type, write a Spring bean that implements `JobHandler`.
+
+### Run more instances
+
+Start a second instance on another port. It joins the same consumer group and takes over half the work:
+
+```bash
+SERVER_PORT=8082 HOSTNAME=node-2 ./mvnw spring-boot:run
+```
+
+You can also run everything in Docker, with three extra workers:
+
+```bash
+docker compose --profile app up -d --build --scale worker=3
+```
+
+### Run the tests
 
 ```bash
 ./mvnw verify
 ```
 
-Integration tests start a real PostgreSQL in Docker with Testcontainers, so Docker must be running.
+The integration tests start real PostgreSQL, Kafka and Redis containers with Testcontainers, so Docker must be running.
 
-## API
+### Run a load test
 
-Every request is scoped to a tenant through the `X-Tenant-Id` header (defaults to `default`).
-
-| Method | Path | Description |
-| --- | --- | --- |
-| `POST` | `/jobs` | Submit a job. Returns `201` with a `Location` header. |
-| `GET` | `/jobs/{id}` | Fetch one job. `404` if it belongs to another tenant. |
-| `GET` | `/jobs?status=PENDING&page=0&size=20` | List jobs, newest first. |
-| `POST` | `/jobs/{id}/cancel` | Cancel a job that has not started. `409` otherwise. |
+With [k6](https://k6.io) installed:
 
 ```bash
-curl -X POST localhost:8080/jobs \
-  -H 'Content-Type: application/json' \
-  -H 'X-Tenant-Id: acme' \
-  -d '{"type": "send-email", "payload": {"to": "a@example.com"}, "runAt": "2026-12-01T09:00:00Z", "maxAttempts": 5}'
+k6 run -e RATE=200 -e DURATION=60s -e RUN_ID=my-run loadtest/submit-jobs.js
+docker compose exec -T postgres psql -U scheduler -v run_id="'my-run'" -f - < loadtest/report.sql
 ```
 
-Errors use RFC 7807 problem responses. Validation errors include an `errors` map of field to message.
+### Stop everything
 
-## Job lifecycle
-
-```
-PENDING -> QUEUED -> RUNNING -> SUCCEEDED
-                        |
-                        v
-                    RETRYING -> QUEUED ...   (until max attempts)
-                        |
-                        v
-                      FAILED
-
-PENDING / QUEUED / RETRYING -> CANCELLED
-```
-
-## Project layout
-
-```
-src/main/java/com/jobscheduler
-  api/      REST controller, request/response records, error mapping
-  job/      Job entity, status rules, repository, service
-  common/   Shared config (Clock)
-src/main/resources/db/migration   Flyway SQL migrations
+```bash
+docker compose down        # keeps the data
+docker compose down -v     # also deletes the data
 ```

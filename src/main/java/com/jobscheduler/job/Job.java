@@ -6,6 +6,7 @@ import jakarta.persistence.EnumType;
 import jakarta.persistence.Enumerated;
 import jakarta.persistence.Id;
 import jakarta.persistence.Table;
+import jakarta.persistence.Version;
 import org.hibernate.annotations.JdbcTypeCode;
 import org.hibernate.type.SqlTypes;
 
@@ -56,12 +57,42 @@ public class Job {
     @Column(name = "completed_at")
     private Instant completedAt;
 
+    @Column(name = "locked_by")
+    private String lockedBy;
+
+    @Column(name = "lease_expires_at")
+    private Instant leaseExpiresAt;
+
+    private String cron;
+
+    @Column(name = "parent_job_id")
+    private UUID parentJobId;
+
+    @Enumerated(EnumType.STRING)
+    @Column(nullable = false)
+    private JobPriority priority = JobPriority.NORMAL;
+
+    @Column(name = "idempotency_key")
+    private String idempotencyKey;
+
+    @Column(name = "request_hash")
+    private String requestHash;
+
+    /** Workers update jobs with plain SQL that also bumps this, so JPA notices concurrent changes. */
+    @Version
+    private Long version;
+
     protected Job() {
         // for JPA
     }
 
     public static Job create(String tenantId, String type, Map<String, Object> payload,
                              Instant runAt, int maxAttempts, Instant now) {
+        return create(tenantId, type, payload, runAt, maxAttempts, null, now);
+    }
+
+    public static Job create(String tenantId, String type, Map<String, Object> payload,
+                             Instant runAt, int maxAttempts, String cron, Instant now) {
         Job job = new Job();
         job.id = UUID.randomUUID();
         job.tenantId = tenantId;
@@ -70,9 +101,45 @@ public class Job {
         job.status = JobStatus.PENDING;
         job.runAt = runAt == null ? now : runAt;
         job.maxAttempts = maxAttempts;
+        job.cron = cron;
         job.createdAt = now;
         job.updatedAt = now;
         return job;
+    }
+
+    public void setPriority(JobPriority priority) {
+        this.priority = priority;
+    }
+
+    public void assignIdempotencyKey(String key, String hash) {
+        this.idempotencyKey = key;
+        this.requestHash = hash;
+    }
+
+    /** Due now: hand it to the queue. Only valid for a job that has not been queued yet. */
+    public void markQueued(Instant now) {
+        if (status != JobStatus.PENDING) {
+            throw new IllegalJobStateException(id, status, JobStatus.QUEUED);
+        }
+        status = JobStatus.QUEUED;
+        updatedAt = now;
+    }
+
+    public boolean isDue(Instant now) {
+        return !runAt.isAfter(now);
+    }
+
+    /** Give a dead-lettered job a fresh set of attempts, starting now. */
+    public void replay(Instant now) {
+        if (status != JobStatus.FAILED) {
+            throw new IllegalJobStateException(id, status, JobStatus.QUEUED);
+        }
+        status = JobStatus.QUEUED;
+        attempts = 0;
+        lastError = null;
+        completedAt = null;
+        runAt = now;
+        updatedAt = now;
     }
 
     public void cancel(Instant now) {
@@ -96,4 +163,12 @@ public class Job {
     public Instant getCreatedAt() { return createdAt; }
     public Instant getUpdatedAt() { return updatedAt; }
     public Instant getCompletedAt() { return completedAt; }
+    public String getLockedBy() { return lockedBy; }
+    public Instant getLeaseExpiresAt() { return leaseExpiresAt; }
+    public Long getVersion() { return version; }
+    public String getCron() { return cron; }
+    public JobPriority getPriority() { return priority; }
+    public String getIdempotencyKey() { return idempotencyKey; }
+    public String getRequestHash() { return requestHash; }
+    public UUID getParentJobId() { return parentJobId; }
 }

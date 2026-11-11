@@ -15,6 +15,24 @@ spring:
         jdbc.time_zone: UTC
   flyway:
     enabled: true
+  data:
+    redis:
+      host: ${REDIS_HOST:localhost}
+      port: ${REDIS_PORT:6379}
+      timeout: 500ms
+  kafka:
+    bootstrap-servers: ${KAFKA_BOOTSTRAP_SERVERS:localhost:9092}
+    producer:
+      # Wait for all in-sync replicas and let the broker drop producer retries it has already seen.
+      acks: all
+      properties:
+        enable.idempotence: true
+    consumer:
+      group-id: job-workers
+      auto-offset-reset: earliest
+    listener:
+      # Commit each offset after its record is processed.
+      ack-mode: record
 
 server:
   port: 8080
@@ -23,7 +41,16 @@ management:
   endpoints:
     web:
       exposure:
-        include: health,info
+        include: health,info,prometheus,metrics
+  metrics:
+    tags:
+      application: ${spring.application.name}
+      instance: ${scheduler.instance-id}
+
+logging:
+  pattern:
+    # Adds the job being worked on, when there is one, to every log line.
+    level: "%5p [%X{jobId:-}]"
 
 springdoc:
   swagger-ui:
@@ -32,3 +59,39 @@ springdoc:
 scheduler:
   default-tenant: default
   default-max-attempts: 3
+  instance-id: ${HOSTNAME:local}
+  outbox:
+    enabled: true
+    poll-interval-ms: 200
+    batch-size: 100
+  worker:
+    enabled: true
+    # Consumer threads per priority topic, per instance.
+    concurrency:
+      high: 4
+      normal: 3
+      low: 1
+    lease-duration: 30s
+  rate-limit:
+    enabled: true
+    defaults:
+      capacity: 50          # burst size
+      refill-per-second: 10 # sustained rate
+    tenants:
+      bulk-importer:
+        capacity: 500
+        refill-per-second: 100
+  # Max concurrently running jobs per type, across all workers.
+  concurrency-limits:
+    send-email: 5
+  idempotency:
+    # How long a key is remembered in Redis. Postgres keeps it for the life of the job.
+    ttl: 24h
+  retry:
+    base-delay: 1s
+    max-delay: 5m
+  poller:
+    enabled: true
+    interval-ms: 500
+    reaper-interval-ms: 5000
+    batch-size: 100
