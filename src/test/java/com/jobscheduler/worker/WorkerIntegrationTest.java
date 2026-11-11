@@ -59,9 +59,4 @@ class WorkerIntegrationTest extends IntegrationTest {
                 .until(() -> countingHandler.runs(id) == 1);
         assertThat(statusOf(id)).isEqualTo("SUCCEEDED");
     }
-
-    private java.util.List<String> attemptOutcomes(UUID id) {
-        return jdbc.sql("SELECT outcome FROM job_attempts WHERE job_id = :id ORDER BY attempt_number")
-                .param("id", id).query(String.class).list();
-    }
 }

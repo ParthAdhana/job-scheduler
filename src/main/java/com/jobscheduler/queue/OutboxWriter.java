@@ -7,8 +7,10 @@ import org.springframework.stereotype.Component;
 import org.springframework.transaction.annotation.Propagation;
 import org.springframework.transaction.annotation.Transactional;
 
+import java.sql.Timestamp;
 import java.time.Clock;
 import java.time.Instant;
+import java.util.UUID;
 
 /** Appends messages to the outbox table inside the caller's transaction. */
 @Component
@@ -26,20 +28,20 @@ public class OutboxWriter {
 
     /** Must join an existing transaction: an outbox row on its own would defeat the pattern. */
     @Transactional(propagation = Propagation.MANDATORY)
-    public void append(String topic, JobMessage message) {
+    public void append(String topic, UUID messageId, String key, Object message) {
         jdbc.sql("""
                         INSERT INTO outbox (message_id, topic, message_key, payload, created_at)
                         VALUES (:messageId, :topic, :key, :payload, :createdAt)
                         """)
-                .param("messageId", message.messageId())
+                .param("messageId", messageId)
                 .param("topic", topic)
-                .param("key", message.jobId().toString())
+                .param("key", key)
                 .param("payload", toJson(message))
-                .param("createdAt", java.sql.Timestamp.from(Instant.now(clock)))
+                .param("createdAt", Timestamp.from(Instant.now(clock)))
                 .update();
     }
 
-    private String toJson(JobMessage message) {
+    private String toJson(Object message) {
         try {
             return objectMapper.writeValueAsString(message);
         } catch (JsonProcessingException e) {

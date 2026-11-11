@@ -40,11 +40,27 @@ public abstract class IntegrationTest {
     @Autowired
     protected CountingHandler countingHandler;
 
+    @Autowired
+    protected SwitchableHandler switchableHandler;
+
+    @Autowired
+    protected DeadLetterProbe deadLetters;
+
     @TestConfiguration(proxyBeanMethods = false)
     static class TestHandlers {
         @Bean
         CountingHandler countingHandler() {
             return new CountingHandler();
+        }
+
+        @Bean
+        SwitchableHandler switchableHandler() {
+            return new SwitchableHandler();
+        }
+
+        @Bean
+        DeadLetterProbe deadLetterProbe(org.springframework.kafka.core.ConsumerFactory<String, String> consumers) {
+            return new DeadLetterProbe(consumers);
         }
     }
 
@@ -72,6 +88,11 @@ public abstract class IntegrationTest {
     protected void awaitStatus(UUID id, String expected) {
         await().atMost(Duration.ofSeconds(20)).pollInterval(Duration.ofMillis(100))
                 .until(() -> expected.equals(statusOf(id)));
+    }
+
+    protected java.util.List<String> attemptOutcomes(UUID id) {
+        return jdbc.sql("SELECT outcome FROM job_attempts WHERE job_id = :id ORDER BY id")
+                .param("id", id).query(String.class).list();
     }
 
     protected static String uniqueTenant() {

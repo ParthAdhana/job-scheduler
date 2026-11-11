@@ -6,3 +6,9 @@ scheduler:
   worker:
     concurrency: 2
     lease-duration: 10s
+  retry:
+    base-delay: 100ms
+    max-delay: 400ms
+  poller:
+    interval-ms: 100
+    reaper-interval-ms: 300
